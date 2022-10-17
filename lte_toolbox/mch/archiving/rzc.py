@@ -18,10 +18,10 @@ from zipfile import ZipFile
 from itertools import repeat
 from multiprocessing import Pool
 
-from lte_mch_toolbox.archiving.encodings import RZC_NETCDF_ENCODINGS, RZC_ZARR_ENCODINGS
-from lte_mch_toolbox.archiving.metadata import RZC_METADATA
-from lte_mch_toolbox.archiving.utils import xr_drop_duplicated_timesteps 
-from lte_mch_toolbox.archiving.utils import xr_regularize_time_dimension 
+from lte_toolbox.mch.archiving.encodings import RZC_NETCDF_ENCODINGS, RZC_ZARR_ENCODINGS
+from lte_toolbox.mch.archiving.metadata import RZC_METADATA
+from lte_toolbox.mch.archiving.utils import xr_drop_duplicated_timesteps 
+from lte_toolbox.mch.archiving.utils import xr_regularize_time_dimension 
 
 
 RZC_BOTTOM_LEFT_COORDINATES = [255, -160]

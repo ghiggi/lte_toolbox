@@ -9,8 +9,8 @@ import os
 import zarr 
 import xarray as xr 
 import lte_mch_toolbox
-from lte_mch_toolbox.visualization.plot import plot_precip_field
-from lte_mch_toolbox.visualization.plot import plot_precip_fields
+from lte_toolbox.mch.visualization.plot import plot_precip_field
+from lte_toolbox.mch.visualization.plot import plot_precip_fields
 
 rzc_zarr_fpath = os.path.join("/ltenas3/0_Data/NowProject/", "zarr", "rzc_temporal_chunk.zarr")
 # TODO: 

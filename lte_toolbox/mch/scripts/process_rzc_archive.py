@@ -6,7 +6,7 @@ Created on Tue Jun 28 16:54:56 2022
 @author: ghiggi
 """
 import pathlib
-from lte_mch_toolbox.archiving.rzc import (
+from lte_toolbox.mch.archiving.rzc import (
     unzip_and_combine_rzc,
     unzip_rzc,
     rzc_to_netcdf,

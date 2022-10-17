@@ -11,7 +11,7 @@ import pandas as pd
 import xarray as xr 
 import matplotlib.pyplot as plt 
 from PIL import Image
-from lte_mch_toolbox.visualization import plot_precip_field
+from lte_toolbox.mch.visualization import plot_precip_field
 
 rzc_zarr_fpath = os.path.join("/ltenas3/0_Data/NowProject/", "zarr", "rzc_temporal_chunk.zarr")
 figs_dir = "/tmp"
