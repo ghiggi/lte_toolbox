@@ -16,8 +16,24 @@ from xarray.core import dtypes
 
 
 def xr_regularize_time_dimension(ds: xr.Dataset, 
-                                 t_res = "2min30s",
+                                 t_res: str = "2min30s",
                                  fill_value = dtypes.NA):
+    """Fill missing timesteps with default values in a xarray Dataset.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Input xarray Dataset
+    range_freq : str, optional
+        Interval between each timestep, by default "2min30s"
+    fill_value : optional
+        Fill value for missing timesteps
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with a contiguous time range and no missing timesteps
+    """
     start = ds.time.to_numpy()[0]
     end = ds.time.to_numpy()[-1]
     start_date = pd.to_datetime(start).date()
@@ -30,6 +46,19 @@ def xr_regularize_time_dimension(ds: xr.Dataset,
     
 
 def xr_drop_duplicated_timesteps(ds: xr.Dataset):
+    """Drop duplicate timesteps in the input Dataset by only keeping the
+    data measurements taken with the highest number of available radars.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Input xarray Dataset
+
+    Returns
+    -------
+    xr.Dataset
+        Processed dataset with no duplicate timesteps
+    """
     idx_keep = np.arange(len(ds.time))
     to_remove = []
     _, idx, count = np.unique(ds.time, return_counts=True, return_index=True)
