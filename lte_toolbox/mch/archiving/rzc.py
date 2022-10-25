@@ -9,7 +9,8 @@ import shutil
 import pathlib
 import datetime
 
-import pyart
+#import pyart
+import pandas as pd
 import numpy as np
 import xarray as xr 
 from warnings import warn
@@ -22,7 +23,6 @@ from lte_toolbox.mch.archiving.encodings import RZC_NETCDF_ENCODINGS, RZC_ZARR_E
 from lte_toolbox.mch.archiving.metadata import RZC_METADATA
 from lte_toolbox.mch.archiving.utils import xr_drop_duplicated_timesteps 
 from lte_toolbox.mch.archiving.utils import xr_regularize_time_dimension 
-
 
 RZC_BOTTOM_LEFT_COORDINATES = [255, -160]
 
@@ -261,8 +261,12 @@ def netcdf_rzc_to_zarr(data_dir_path: pathlib.Path,
     
     
 def rechunk_zarr_per_pixel(temporal_chunked_zarr_filepath: pathlib.Path,
-                           output_dir_path: pathlib.Path):
-    from xforecasting.utils.zarr import rechunk_Dataset
+                           output_dir_path: pathlib.Path,
+                           data_frequency: str = "2min30s",
+                           chunk_date_frequency: str = "1MS",
+                           compressor: Any = "auto", 
+                           encoding: dict = RZC_ZARR_ENCODINGS):
+    from xforecasting.utils.zarr import write_zarr, rechunk_Dataset
 
     ds = xr.open_zarr(temporal_chunked_zarr_filepath)
     ds['radar_quality'] = ds['radar_quality'].astype(str)
@@ -271,16 +275,53 @@ def rechunk_zarr_per_pixel(temporal_chunked_zarr_filepath: pathlib.Path,
     
     ### Rechunk Zarr by pixel 
     spatial_chunk_filepath = output_dir_path / "chunked_by_pixel.zarr"
-    spatial_chunk_temp_filepath = output_dir_path / "chunked_by_pixel_temp.zarr"
     if spatial_chunk_filepath.exists():
-        shutil.rmtree(spatial_chunk_filepath)
-    if spatial_chunk_temp_filepath.exists():
-        shutil.rmtree(spatial_chunk_temp_filepath)
+            shutil.rmtree(spatial_chunk_filepath)
 
-    rechunk_Dataset(ds, {"time": -1, "y": 1, "x": 1},
-                    spatial_chunk_filepath.as_posix(), 
-                    spatial_chunk_temp_filepath.as_posix(), 
-                    max_mem="1GB", force=False)
+    time_range = pd.date_range(start=ds.time.values[0], 
+                               end=ds.time.values[-1], 
+                               freq=chunk_date_frequency)
+
+    for i in range(len(time_range)-1):
+        curr_range = pd.date_range(start=time_range[i], 
+                                   end=time_range[i+1], 
+                                   freq=data_frequency, 
+                                   inclusive="left")
+
+        ### Rechunk Zarr by pixel 
+        spatial_chunk_subset_filepath = output_dir_path / "chunked_by_pixel_subset.zarr"
+        spatial_chunk_temp_filepath = output_dir_path / "chunked_by_pixel_temp.zarr"
+        if spatial_chunk_subset_filepath.exists():
+            shutil.rmtree(spatial_chunk_subset_filepath)
+        if spatial_chunk_temp_filepath.exists():
+            shutil.rmtree(spatial_chunk_temp_filepath)
+        
+        rechunk_Dataset(ds.sel(time=curr_range), 
+                        {"time": -1, "y": 1, "x": 1},
+                        spatial_chunk_subset_filepath.as_posix(), 
+                        spatial_chunk_temp_filepath.as_posix(), 
+                        max_mem="32GB", force=False)
+                        
+        ds_sub = xr.open_zarr(spatial_chunk_subset_filepath)
+        # ds_sub = ds.sel(time=curr_range).compute()
+        write_zarr(
+            spatial_chunk_filepath.as_posix(),
+            ds_sub,
+            chunks={"time": -1, "y": 1, "x": 1},
+            compressor=compressor,
+            rounding=None,
+            encoding=encoding,
+            consolidated=True,
+            append=(i!=0),
+            append_dim="time",
+            show_progress=True,
+        ) 
+                      
+
+    # rechunk_Dataset(ds, {"time": -1, "y": 1, "x": 1},
+    #                 spatial_chunk_filepath.as_posix(), 
+    #                 spatial_chunk_temp_filepath.as_posix(), 
+    #                 max_mem="1GB", force=False)
     
 ####-----------------------------------------------------------------------------.
 #### Unzipping  
@@ -367,3 +408,7 @@ def unzip_and_combine_rzc(input_dir_path: pathlib.Path,
 
 
 ####-----------------------------------------------------------------------------.
+if __name__ == "__main__":
+    path_zarr = pathlib.Path("/ltenas3/data/NowProject/zarr/")
+    rechunk_zarr_per_pixel(path_zarr / "rzc_subset_temporal_chunk.zarr",
+                            path_zarr, chunk_date_frequency="SMS")
