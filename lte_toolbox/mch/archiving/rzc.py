@@ -5,7 +5,6 @@ Created on Tue Jun 28 15:14:44 2022
 
 @author: ghiggi
 """
-from bz2 import compress
 import shutil
 import pathlib
 import datetime
@@ -34,12 +33,12 @@ from xforecasting.utils.zarr import write_zarr, rechunk_Dataset
 
 RZC_BOTTOM_LEFT_COORDINATES = [255, -160]
 
-def get_metranet_header_dictionary(radar_filepath):
+def get_metranet_header_dictionary(radar_filepath: str) -> dict:
     """Extracts the header of the RZC file.
 
     Parameters
     ----------
-    radar_file : str
+    radar_filepath : str
         Path to the RZC file.
 
     Returns
@@ -68,7 +67,7 @@ def get_metranet_header_dictionary(radar_filepath):
         return None
     
 
-def get_time_from_rzc_filename(filename: str):
+def get_time_from_rzc_filename(filename: str) -> datetime.datetime:
     """Determines the time corresponding to the RZC filename.
 
     Parameters
@@ -266,20 +265,26 @@ def netcdf_rzc_to_zarr(data_dir_path: pathlib.Path,
         show_progress=True,
     )
     
-    
-def rechunk_zarr_per_pixel(temporal_chunked_zarr_filepath: pathlib.Path,
-                           output_dir_path: pathlib.Path,
-                           data_frequency: str = "2min30s",
-                           chunk_date_frequency: str = "1MS",
-                           compressor: Any = "auto", 
-                           encoding: dict = RZC_ZARR_ENCODINGS):
-    ds = xr.open_zarr(temporal_chunked_zarr_filepath)
+
+def load_rzc_zarr(rzc_zarr_filepath: pathlib.Path,
+                  mask_to_uint: bool = True) -> xr.Dataset:
+    ds = xr.open_zarr(rzc_zarr_filepath)
     ds['radar_quality'] = ds['radar_quality'].astype(str)
     ds['radar_availability'] = ds['radar_availability'].astype(str)
     ds['radar_names'] = ds['radar_names'].astype(str)
+    if mask_to_uint:
+        ds["mask"] = ds.mask.astype("uint8")
     
-    ### Rechunk Zarr by pixel 
-    spatial_chunk_filepath = output_dir_path / "test_chunked_by_pixel.zarr"
+    return ds
+    
+def rechunk_zarr_per_pixel(ds: xr.Dataset,
+                           output_dir_path: pathlib.Path,
+                           chunks: dict,
+                           chunk_date_frequency: str = "6MS",
+                           compressor: Any = "auto",
+                           encoding: dict = RZC_ZARR_ENCODINGS,
+                           zarr_filename: str = "rzc_chunked_by_pixel.zarr"):
+    spatial_chunk_filepath = output_dir_path / zarr_filename
     if spatial_chunk_filepath.exists():
         shutil.rmtree(spatial_chunk_filepath)
 
@@ -287,26 +292,37 @@ def rechunk_zarr_per_pixel(temporal_chunked_zarr_filepath: pathlib.Path,
                                end=ds.time.values[-1], 
                                freq=chunk_date_frequency)
     loading_writing_time = time()
-    for i in range(len(time_range)-1):
-        curr_range = pd.date_range(start=time_range[i], 
-                                   end=time_range[i+1], 
-                                   freq=data_frequency, 
-                                   inclusive="left")
+    for i in range(len(time_range)):
+        print(time_range[i])
+        # Find range of indices of timesteps to cover 
+        bool_time_range_left = ds.time >= time_range[i].to_datetime64()
+        if i < len(time_range) - 1:
+            bool_time_range_right = ds.time <= time_range[i+1].to_datetime64()
+        idxs = np.where(bool_time_range_left)[0] if i == len(time_range) - 1 else \
+                np.where(bool_time_range_left & bool_time_range_right)[0]
+
+        # # Create range of timesteps to cover 
+        # end_date = ds.time.values[-1] if i == len(time_range) - 1 else time_range[i+1]
+        # # TODO: Make more robust
+        # curr_range = pd.date_range(start=time_range[i], 
+        #                            end=end_date, 
+        #                            freq=data_frequency, 
+        #                            inclusive="both" if i == len(time_range) - 1 else "left")
 
         ### Rechunk Zarr by pixel 
         start_time = time()
-        ds_sub = ds.sel(time=curr_range).compute()
-        ds_sub = ds.isel(y=slice(0, 5), x=slice(0, 5))
+        ds_sub = ds.isel(time=slice(idxs[0], idxs[-1])).compute()
         print("- Loading sliced dataset in memory: {:.0f}min".format((time() - start_time)/60))
 
         for var in ds_sub.data_vars:
-            del ds_sub[var].encoding['chunks']
+            if "chunks" in ds_sub[var].encoding:
+                del ds_sub[var].encoding['chunks']
 
         start_time = time()
         write_zarr(
             spatial_chunk_filepath.as_posix(),
             ds_sub,
-            chunks={"time": -1, "y": 1, "x": 1},
+            chunks=chunks,
             compressor=compressor,
             rounding=None,
             encoding=encoding,
@@ -315,9 +331,11 @@ def rechunk_zarr_per_pixel(temporal_chunked_zarr_filepath: pathlib.Path,
             append_dim="time",
             show_progress=True,
         )
-        print("- Writing sliced spatially-chunked dataset: {:.0f}min".format((time() - start_time)/60))
-    
-    print("- Rechunking Zarr per pixel: {:.0f}min".format((time() - loading_writing_time)/60))
+        print("- Writing sliced spatially-chunked dataset: {:.0f}min\n".format((time() - start_time)/60))
+
+        del ds_sub
+
+    print("Rechunking Zarr per pixel: {:.0f}min".format((time() - loading_writing_time)/60))
 
     ds = xr.open_zarr(spatial_chunk_filepath)
     print("Total Zarr Dataset size when loaded: {:.0f}MB".format(ds.nbytes/10e6))
@@ -409,6 +427,29 @@ def unzip_and_combine_rzc(input_dir_path: pathlib.Path,
 ####-----------------------------------------------------------------------------.
 if __name__ == "__main__":
     path_zarr = pathlib.Path("/ltenas3/data/NowProject/zarr/")
-    rechunk_zarr_per_pixel(path_zarr / "rzc_subset_temporal_chunk.zarr",
-                           path_zarr, chunk_date_frequency="SMS", 
-                           compressor=zarr.Blosc(cname="zstd", clevel=3, shuffle=2))
+    ds = load_rzc_zarr(path_zarr / "rzc_temporal_chunk.zarr")
+    rechunk_zarr_per_pixel(ds,
+                           path_zarr, 
+                           chunks={"time": -1, "y": 5, "x": 5},
+                           chunk_date_frequency="6MS", 
+                           compressor=zarr.Blosc(cname="zstd", clevel=3, shuffle=2),
+                           zarr_filename=f"rzc_spatial_chunk_5x5.zarr")
+
+
+    # path_per_year_temporal = path_zarr / "per_year" / "temporal_chunk"
+    # path_per_year_temporal.mkdir(parents=True, exist_ok=True)
+    # for year in np.unique(ds.time.dt.year):
+    #     print(year)
+    #     ds.sel(time=str(year)).chunk(temporal_chunks)\
+    #                           .to_zarr(path_per_year_temporal / f"rzc_{year}_temporal_chunk.zarr",
+    #                                    mode="w")
+
+    # path_per_year_spatial = path_zarr / "per_year" / "spatial_chunk_5x5"
+    # path_per_year_spatial.mkdir(parents=True, exist_ok=True)
+    # for year in np.unique(ds.time.dt.year):
+    #     rechunk_zarr_per_pixel(path_per_year_temporal / f"rzc_{year}_temporal_chunk.zarr",
+    #                            path_per_year_spatial, 
+    #                            chunks={"time": -1, "y": 5, "x": 5},
+    #                            chunk_date_frequency="6MS", 
+    #                            compressor=zarr.Blosc(cname="zstd", clevel=3, shuffle=2),
+    #                            zarr_filename=f"rzc_{year}_spatial_chunk.zarr")
