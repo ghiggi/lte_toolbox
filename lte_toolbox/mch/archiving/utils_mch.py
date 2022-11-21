@@ -1,7 +1,8 @@
+import zarr
 import shutil
 import pathlib
 import datetime
-from typing import Any, Union
+from typing import Any, Tuple, Union
 
 from time import time
 from warnings import warn
@@ -42,84 +43,25 @@ ASCII_CODE_POINT_A = ord("a")
 MAX_NUMBER_IN_RADAR_LOOKUP_TABLE = 9
 
 # -----------------------------------------------------------------------------.
-# Unzipping
-
-
-def unzip_mch(input_dir_path: pathlib.Path,
-              output_dir_path: pathlib.Path,
-              data_start_date: datetime.datetime,
-              data_end_date: datetime.datetime = None,
-              product: str = "RZC"):
-    """Unzip all RZC .zip files for all years starting 2016 and save them
-    in an output folder.
-
-    Parameters
-    ----------
-    input_dir_path : pathlib.Path
-        Path to input folder
-    output_dir_path : pathlib.Path
-        Path to folder where unzipped files will be saved
-    data_start_year: int, optional
-        Year starting which the data should be unzipped
-    """
-    if not data_end_date:
-        data_end_date = datetime.datetime.today()
-    folders = input_dir_path.glob("*")
-    for folder_year in sorted(folders):
-        year = int(folder_year.name)
-        if year >= data_start_date.year:
-            print(f"{year}.. ", end="")
-            output_year_path = output_dir_path / str(year)
-            output_year_path.mkdir(exist_ok=True)
-            days = folder_year.glob("*")
-            for folder_day in days:
-                folder_datetime = datetime.datetime.strptime(folder_day.name, "%y%j")
-                if folder_datetime >= data_start_date and folder_datetime <= data_end_date:
-                    output_day_path = output_year_path / folder_day.name
-                    output_day_path.mkdir(parents=True, exist_ok=True)
-                    zip_path = list(folder_day.glob(f"{product}*.zip"))[0]
-                    unzip_file(zip_path, output_day_path)
-            print("done.")
-
-
-def unzip_file(zip_path: pathlib.Path, output_path: pathlib.Path):
-    """Unzip .zip file and save the foldeer in output_path.
-
-    Parameters
-    ----------
-    input_path : pathlib.Path
-        Path to input folder
-    output_path : pathlib.Path
-        Path to folder where unzipped files will be saved
-    """
-    with ZipFile(zip_path, 'r') as zip_ref:
-        output_zip_path = output_path / zip_path.stem
-        output_zip_path.mkdir(exist_ok=True)
-        zip_ref.extractall(output_zip_path)
-
-
-def unzip_files(input_path: pathlib.Path, output_path: pathlib.Path):
-    """Unzip .zip files in input_path and save them in output_path.
-
-    Parameters
-    ----------
-    input_path : pathlib.Path
-        Path to input folder
-    output_path : pathlib.Path
-        Path to folder where unzipped files will be saved
-    """
-    for p in sorted(input_path.glob("*.zip")):
-        with ZipFile(p, 'r') as zip_ref:
-            zip_name = p.name[:-4]
-            output_zip_path = output_path / zip_name
-            output_zip_path.mkdir(exist_ok=True)
-            zip_ref.extractall(output_zip_path)
-
-
-# -----------------------------------------------------------------------------.
 # Reading mch files
 
 def read_mch_file(input_path: pathlib.Path, product_info: dict, **kwargs):
+    """Read the content of a MCH file using the metranet or the gif reader,
+    depending on the product type.
+
+    Parameters
+    ----------
+    input_path : pathlib.Path
+        Path to MCH file
+    product_info : dict
+        Dictionary containing product info, should contain
+        at least "productid" and "accutime"
+
+    Returns
+    -------
+    Grid
+        Grid object containing the data extracted by the reader
+    """
     if product_info.get("productid", "").lower() == "cpc":
         return import_mch_gif(input_path,
                               product_info.get("productid"),
@@ -131,13 +73,40 @@ def read_mch_file(input_path: pathlib.Path, product_info: dict, **kwargs):
 
 
 def get_filename_format(filename: str) -> str:
+    """Return the format of the filename to extract relevant information
+    from it.
+
+    Parameters
+    ----------
+    filename : str
+        Filename to obtain the format of
+
+    Returns
+    -------
+    str
+        Format of the filename
+    """
     return CPC_FILENAME_FORMAT if "cpc" in filename.lower() else DEFAULT_FILENAME_FORMAT
 
 
 def process_product_time(product_time: datetime.datetime) -> datetime.datetime:
-    min = product_time.minute
+    """Add half a minute to the time associated to a measurement if the
+    last digit is either 2 or 7. The presence of a 2 or 7 generally translates
+    in a time resolution of 2.5 mins.
+
+    Parameters
+    ----------
+    product_time : datetime.datetime
+        Datetime to process
+
+    Returns
+    -------
+    datetime.datetime
+        Processed datetime
+    """
+    last_digit_min = product_time.minute % 10
     return product_time + datetime.timedelta(seconds=30) if\
-        min == 2 or min == 7 else product_time
+        last_digit_min == 2 or last_digit_min == 7 else product_time
 
 
 # TODO: Review radar quality and available radars
@@ -161,11 +130,24 @@ def get_available_radars(radar_quality: int) -> str:
     return radars
 
 
-def get_coords_from_corners(rzc):
-    rzc_shape = rzc.shape
+def get_coords_from_corners(mch_data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return the list of x and y coordinates for each point in the grid
+    from the predefined MCH corner coordinates.
+
+    Parameters
+    ----------
+    mch_data : np.ndarray
+        MCH data to get the coordinates for
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Lists of x and y coordinates corresponding to each grid point
+    """
+    mch_shape = mch_data.shape
     x = np.arange(MCH_BOTTOM_LEFT_COORDINATES[0],
-                  MCH_BOTTOM_LEFT_COORDINATES[0] + rzc_shape[1]) + 0.5
-    y = np.arange(MCH_BOTTOM_LEFT_COORDINATES[1] + rzc_shape[0] - 1,
+                  MCH_BOTTOM_LEFT_COORDINATES[0] + mch_shape[1]) + 0.5
+    y = np.arange(MCH_BOTTOM_LEFT_COORDINATES[1] + mch_shape[0] - 1,
                   MCH_BOTTOM_LEFT_COORDINATES[1] - 1, -1) + 0.5
     x = x*1000
     y = y*1000
@@ -174,7 +156,8 @@ def get_coords_from_corners(rzc):
 
 
 def get_metranet_header_dictionary(radar_filepath: str) -> dict:
-    """Extracts the header of the RZC file.
+    """Extracts the header of the MCH file. The product file must not
+    be a gif.
 
     Parameters
     ----------
@@ -184,7 +167,7 @@ def get_metranet_header_dictionary(radar_filepath: str) -> dict:
     Returns
     -------
     dict
-        Header of the RZC file containing the different metadata
+        Header of the MCH file containing the different metadata
     """
     # Example
     # fpath = "/home/ghiggi/RZC203221757VL.801"
@@ -207,7 +190,25 @@ def get_metranet_header_dictionary(radar_filepath: str) -> dict:
         return None
 
 
-def get_data_header_from_mch(mch, input_path: pathlib.Path, product_info: dict):
+def get_data_header_from_mch(mch, input_path: pathlib.Path,
+                             product_info: dict) -> Tuple[np.ma.MaskedArray, dict]:
+    """Return the data and the header associated to an MCH file.
+
+    Parameters
+    ----------
+    mch : _type_
+        Object extracted by the reader
+    input_path : pathlib.Path
+        Path to MCH file
+    product_info : dict
+        Dictionary containing product info, should contain
+        at least "productid" and "radar_availability"
+
+    Returns
+    -------
+    Tuple[np.ma.MaskedArrray, dict]
+        Data and header associated to an MCH file.
+    """
     if product_info.get("productid", "").lower() in ["cpc", "cpch"]:
         header = mch[2]
         header["radar"] = get_available_radars(int(product_info["radar_availability"]))
@@ -223,7 +224,20 @@ def get_data_header_from_mch(mch, input_path: pathlib.Path, product_info: dict):
     return mch_data, header
 
 
-def merge_metadata_product_header(product_header: dict):
+def merge_metadata_product_header(product_header: dict) -> dict:
+    """Merge basic metadata for an MCH product and the header
+    extracted from the product file.
+
+    Parameters
+    ----------
+    product_header : dict
+        Header associated to the MCH file
+
+    Returns
+    -------
+    dict
+        Merged metadata dictionary
+    """
     attrs = METADATA.copy()
     attrs["product"] = product_header.get("product", "")
     attrs["pid"] = product_header.get("pid", attrs["product"])
@@ -284,10 +298,9 @@ def daily_mch_to_netcdf(input_dir_path: pathlib.Path,
         Path to the output folder
     file_suffix : str
         File suffix
-    log_dir_path : pathlib.Path
-        Path to save the logs of the reading process
-    encoding : dict, optional
-        Encoding of the netCDF file, by default NETCDF_ENCODINGS
+    fill_value : dict, optional
+        Dictionary containing the fill values for each variable in
+        case data is missing, by default {"data": np.nan, "mask": 0}
     """
     output_filename = input_dir_path.name + ".nc"
     list_ds = []
@@ -315,6 +328,23 @@ def produce_daily_netcdf(input_path: pathlib.Path,
                          output_netcdf_path: pathlib.Path,
                          file_suffix: str,
                          fill_value={"data": np.nan, "mask": 0}):
+    """Unzip MCH daily zip file, then read and combine all the
+    extracted files into one netCDF file.
+
+    Parameters
+    ----------
+    input_dir_path : pathlib.Path
+        Path to the input folder
+    output_zip_path : pathlib.Path
+        Path to folder where the files will be unzipped
+    output_netcdf_path : pathlib.Path
+        Path to folder where the netCDF will be saved
+    file_suffix : str
+        File suffix
+    fill_value : dict, optional
+        Dictionary containing the fill values for each variable in
+        case data is missing, by default {"data": np.nan, "mask": 0}
+    """
     with ZipFile(input_path, 'r') as zip_ref:
         zip_name = input_path.stem
         output_zip_day_path = output_zip_path / zip_name
@@ -336,6 +366,32 @@ def unzip_and_combine_mch(input_dir_path: pathlib.Path,
                           data_end_date: datetime.datetime = None,
                           fill_value={"data": np.nan, "mask": 0},
                           num_workers: int = 2):
+    """In parallel, unzip all MCH daily zip files contained in the hierarchy, then
+    read and combine all the extracted files into daily netCDF files.
+
+    Parameters
+    ----------
+    input_dir_path : pathlib.Path
+        Path to the input folder
+    output_zip_path : pathlib.Path
+        Path to folder where the files will be unzipped
+    output_netcdf_path : pathlib.Path
+        Path to folder where the netCDF files will be saved
+    product : str
+        Product ID
+    file_suffix : str
+        File suffix
+    data_start_date : datetime.datetime
+        Start date of the desired time period to extract
+    data_end_date : datetime.datetime, optional
+        End date of the desired time period to extract, by default None
+    fill_value : dict, optional
+        Dictionary containing the fill values for each variable in
+        case data is missing, by default {"data": np.nan, "mask": 0}
+    num_workers : int, optional
+        Number of workers to parallelize the extraction and combination
+        process, by default 2
+    """
     if not data_end_date:
         data_end_date = datetime.datetime.today()
     folders = input_dir_path.glob("*")
@@ -370,8 +426,20 @@ def unzip_and_combine_mch(input_dir_path: pathlib.Path,
 
 def netcdf_mch_to_zarr(netcdf_dir_path: pathlib.Path,
                        output_dir_path: pathlib.Path,
-                       compressor: Any = "auto",
-                       encoding: dict = MCH_ZARR_ENCODINGS):
+                       compressor: Any = "auto"):
+    """Load all the daily netCDF files in a hierarchy and combine them into
+    one Zarr file, chunked by time.
+
+    Parameters
+    ----------
+    netcdf_dir_path : pathlib.Path
+        Path to parent folder containing the netCDF files.
+        Structure parent_folder/year/*.nc.
+    output_dir_path : pathlib.Path
+        Path to folder where the Zarr file will be saved.
+    compressor : Any, optional
+        Compressor to use when saving the Zarr file, by default "auto"
+    """
     temporal_chunk_filepath = output_dir_path / "chunked_by_time.zarr"
     if temporal_chunk_filepath.exists():
         shutil.rmtree(temporal_chunk_filepath)
@@ -383,9 +451,9 @@ def netcdf_mch_to_zarr(netcdf_dir_path: pathlib.Path,
                for p in fpaths]
     ds = xr.concat(list_ds, dim="time")
     pid = list_ds[0].attrs["pid"].upper()
-    encoding = MCH_NETCDF_ENCODINGS.copy()
-    encoding["data"].update(DATA_ENCODING_PER_PID[pid])
-
+    encoding = MCH_ZARR_ENCODINGS.copy()
+    encoding["data"] = DATA_ENCODING_PER_PID[pid]
+    print(encoding)
     # ds.attrs = RZC_METADATA # TODO: MAYBE ADD ALREADY TO NETCDF
     # --------------------------------------------------.
     # Write Zarr by block of time
@@ -402,9 +470,25 @@ def netcdf_mch_to_zarr(netcdf_dir_path: pathlib.Path,
     )
 
 
-def load_mch_zarr(rzc_zarr_filepath: pathlib.Path,
+def load_mch_zarr(mch_zarr_filepath: pathlib.Path,
                   mask_to_uint: bool = True) -> xr.Dataset:
-    ds = xr.open_zarr(rzc_zarr_filepath)
+    """Open the Zarr file containing the MCH data, and assign the
+    correct types to coordinates and the mask variable.
+
+    Parameters
+    ----------
+    mch_zarr_filepath : pathlib.Path
+        Path to the Zarr file to open
+    mask_to_uint : bool, optional
+        Whether to convert the mask variable to uint8, by default True
+
+    Returns
+    -------
+    xr.Dataset
+        Processed xarray dataset with the correct coordinates and
+        variables type
+    """
+    ds = xr.open_zarr(mch_zarr_filepath)
     ds['radar_quality'] = ds['radar_quality'].astype(str)
     ds['radar_availability'] = ds['radar_availability'].astype(str)
     ds['radar_names'] = ds['radar_names'].astype(str)
@@ -418,8 +502,26 @@ def rechunk_zarr_per_pixel(ds: xr.Dataset,
                            chunks: dict,
                            chunk_date_frequency: str = "6MS",
                            compressor: Any = "auto",
-                           encoding: dict = MCH_ZARR_ENCODINGS,
-                           zarr_filename: str = "mch_chunked_by_pixel.zarr"):
+                           zarr_filename: str = "chunked_by_pixel.zarr"):
+    """Rechunk pixel-wise a temporally chunked xarray dataset and save it in
+    Zarr format.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Temporally chunked dataset to rechunk
+    output_dir_path : pathlib.Path
+        Path to folder where the Zarr file will be saved.
+    chunks : dict
+        Dictionary containing chunks per coordinate.
+        E.g. {"time": -1, "x": 1, "y": 1}
+    chunk_date_frequency : str, optional
+        Temporal length of each spatial chunk, by default "6MS"
+    compressor : Any, optional
+        Compressor to use when saving the Zarr file, by default "auto"
+    zarr_filename : str, optional
+        Zarr filename, by default "chunked_by_pixel.zarr"
+    """
     spatial_chunk_filepath = output_dir_path / zarr_filename
     if spatial_chunk_filepath.exists():
         shutil.rmtree(spatial_chunk_filepath)
@@ -428,6 +530,10 @@ def rechunk_zarr_per_pixel(ds: xr.Dataset,
                                    end=ds.time.values[-1],
                                    freq=chunk_date_frequency)
     loading_writing_time = time()
+    pid = ds.attrs["pid"].upper()
+    encoding = MCH_ZARR_ENCODINGS.copy()
+    encoding["data"] = DATA_ENCODING_PER_PID[pid]
+
     for i in range(len(time_intervals)):
         print(time_intervals[i])
         # Find range of indices of timesteps to cover
@@ -471,26 +577,48 @@ def rechunk_zarr_per_pixel(ds: xr.Dataset,
 
 
 if __name__ == "__main__":
+    file_suffixes = {
+        "AZC": ".801",
+        "BZC": ".845",
+        "CPC": ".801.gif",
+        "CPCH": ".801.gif",
+        "CZC": ".801",
+        "EZC": ".815",
+        "LZC": ".801",
+        "MZC": ".850",
+        "RZC": ".801",
+        "aZC": ".824"
+    }
     zip_dir_path = pathlib.Path("/ltenas3/alfonso/msrad_bgg/2022")
     root_dir_path = pathlib.Path("/ltenas3/data/NowProject/snippet_mch/AZC/")
     if root_dir_path.exists():
         shutil.rmtree(root_dir_path)
     unzipped_dir_path = root_dir_path / "unzipped_temp"
     netcdf_dir_path = root_dir_path / "netcdf_temp"
+    zarr_dir_path = root_dir_path / "zarr"
 
     unzipped_dir_path.mkdir(exist_ok=True, parents=True)
     netcdf_dir_path.mkdir(exist_ok=True, parents=True)
+    zarr_dir_path.mkdir(exist_ok=True, parents=True)
 
     data_start_date = datetime.datetime.strptime("2022-01-01", "%Y-%m-%d")
-    data_end_date = datetime.datetime.strptime("2022-06-15", "%Y-%m-%d")
-    workers = 1
+    data_end_date = datetime.datetime.strptime("2022-12-31", "%Y-%m-%d")
+    workers = 12
+
+    print("MCH Extraction")
     unzip_and_combine_mch(zip_dir_path, unzipped_dir_path, netcdf_dir_path,
-                          product="AZC", file_suffix=".801",
+                          product="AZC", file_suffix=file_suffixes["AZC"],
                           data_start_date=data_start_date,
                           num_workers=workers)
-
-    # input_path = pathlib.Path("/ltenas3/data/NowProject/snippet_mch/2022/22152/AZC22152")
-    # netcdf_dir_path = pathlib.Path("/ltenas3/data/NowProject/snippet_mch/AZC/netcdf_temp/2022")
-    # ds = daily_mch_to_netcdf(input_path, netcdf_dir_path, file_suffix=".801")
-
-
+    print("Converting to temporally-chunked zarr")
+    netcdf_mch_to_zarr(netcdf_dir_path, zarr_dir_path,
+                       compressor=zarr.Blosc(cname="zstd", clevel=3, shuffle=2))
+    print("Temporal to spatial chunking")
+    ds = load_mch_zarr(zarr_dir_path / "chunked_by_time.zarr")
+    rechunk_zarr_per_pixel(ds,
+                           zarr_dir_path,
+                           chunks={"time": -1, "y": 5, "x": 5},
+                           chunk_date_frequency="6MS",
+                           compressor=zarr.Blosc(cname="zstd", clevel=3,
+                                                 shuffle=2),
+                           zarr_filename="chunked_by_pixel_5x5.zarr")
