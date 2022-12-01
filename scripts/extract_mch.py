@@ -23,41 +23,59 @@ file_suffixes = {
     "aZC": ".824"
 }
 
-product = "AZC"
+accutimes = {
+    "AZC": None,
+    "BZC": None,
+    "CPC": 60,
+    "CPCH": 60,
+    "CZC": None,
+    "EZC": None,
+    "LZC": None,
+    "MZC": None,
+    "RZC": None,
+    "aZC": None
+}
 
-zip_dir_path = pathlib.Path("/ltenas3/alfonso/msrad_bgg/2022")
-root_dir_path = pathlib.Path(f"/ltenas3/data/NowProject/snippet_mch/{product}/")
-if root_dir_path.exists():
-    shutil.rmtree(root_dir_path)
+for product in file_suffixes:
+    print(product)
+    zip_dir_path = pathlib.Path("/ltenas3/alfonso/msrad_bgg/2022")
+    root_dir_path = pathlib.Path(f"/ltenas3/data/NowProject/snippet_mch/{product}")
+    if accutimes[product] is not None:
+        root_dir_path = root_dir_path / str(accutimes[product])
 
-unzipped_dir_path = root_dir_path / "unzipped_temp"
-netcdf_dir_path = root_dir_path / "netcdf_temp"
-zarr_dir_path = root_dir_path / "zarr"
+    if root_dir_path.exists():
+        shutil.rmtree(root_dir_path)
 
-unzipped_dir_path.mkdir(exist_ok=True, parents=True)
-netcdf_dir_path.mkdir(exist_ok=True, parents=True)
-zarr_dir_path.mkdir(exist_ok=True, parents=True)
+    root_dir_path.mkdir(parents=True, exist_ok=True)
 
-data_start_date = datetime.datetime.strptime("2022-01-01", "%Y-%m-%d")
-data_end_date = datetime.datetime.strptime("2022-12-31", "%Y-%m-%d")
-workers = 12
+    netcdf_dir_path = root_dir_path / "netcdf_temp"
+    zarr_dir_path = root_dir_path / "zarr"
 
-print("MCH Extraction")
-unzip_and_combine_mch(zip_dir_path, unzipped_dir_path, netcdf_dir_path,
-                      product=product, file_suffix=file_suffixes[product],
-                      data_start_date=data_start_date,
-                      num_workers=workers)
+    netcdf_dir_path.mkdir(exist_ok=True, parents=True)
+    zarr_dir_path.mkdir(exist_ok=True, parents=True)
 
-print("Converting to temporally-chunked zarr")
-netcdf_mch_to_zarr(netcdf_dir_path, zarr_dir_path,
-                   compressor=zarr.Blosc(cname="zstd", clevel=3, shuffle=2))
+    data_start_date = datetime.datetime.strptime("2022-01-01", "%Y-%m-%d")
+    data_end_date = datetime.datetime.strptime("2022-12-31", "%Y-%m-%d")
+    workers = 12
 
-print("Temporal to spatial chunking")
-ds = load_mch_zarr(zarr_dir_path / "chunked_by_time.zarr")
-rechunk_zarr_per_pixel(ds,
-                       zarr_dir_path,
-                       chunks={"time": -1, "y": 5, "x": 5},
-                       chunk_date_frequency="6MS",
-                       compressor=zarr.Blosc(cname="zstd", clevel=3,
-                                             shuffle=2),
-                       zarr_filename="chunked_by_pixel_5x5.zarr")
+    print("MCH Extraction")
+    unzip_and_combine_mch(zip_dir_path, netcdf_dir_path,
+                          product=product, file_suffix=file_suffixes[product],
+                          accutime=accutimes[product],
+                          data_start_date=data_start_date,
+                          num_workers=workers)
+
+    print("Converting to temporally-chunked zarr")
+    netcdf_mch_to_zarr(netcdf_dir_path, zarr_dir_path,
+                       compressor=zarr.Blosc(cname="zstd", clevel=3, shuffle=2))
+
+    print("Temporal to spatial chunking")
+    ds = load_mch_zarr(zarr_dir_path / "chunked_by_time.zarr")
+    rechunk_zarr_per_pixel(ds,
+                           zarr_dir_path,
+                           chunks={"time": -1, "y": 5, "x": 5},
+                           chunk_date_frequency="6MS",
+                           compressor=zarr.Blosc(cname="zstd", clevel=3,
+                                                 shuffle=2),
+                           zarr_filename="chunked_by_pixel_5x5.zarr")
+    print()

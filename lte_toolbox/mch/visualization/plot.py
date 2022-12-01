@@ -36,7 +36,7 @@ def _plot_map_cartopy(
     lw: float = 0.5
 ):
     """Plot coastlines, countries, rivers and meridians/parallels using cartopy.
-    
+
     Parameters
     ----------
     crs : ccrs.Projection
@@ -62,7 +62,7 @@ def _plot_map_cartopy(
         Cartopy axes. Compatible with matplotlib.
     """
     valid_cartopy_scale = ["10m", "50m", "110m"]
-    if cartopy_scale in valid_cartopy_scale:
+    if cartopy_scale not in valid_cartopy_scale:
         raise ValueError(f'Valid cartopy_scale are {valid_cartopy_scale}')
 
     if not ax:
@@ -179,18 +179,18 @@ def get_cbar_label(ptype, probthr, units):
     return cbar_label
 
 
-def plot_precip_field(da: xr.DataArray, 
-                      ax: Axes = None, 
-                      ptype="intensity", 
-                      units="mm/h", 
-                      colorscale="pysteps", 
-                      figsize=(8,5), 
-                      title: str = None, 
+def plot_precip_field(da: xr.DataArray,
+                      ax: Axes = None,
+                      ptype="intensity",
+                      units="mm/h",
+                      colorscale="pysteps",
+                      figsize=(8, 5),
+                      title: str = None,
                       colorbar: bool = True,
-                      norm: Normalize = None, 
+                      norm: Normalize = None,
                       cmap: Union[Colormap, str] = None,
-                      drawlonlatlines: bool = False, 
-                      extent: Tuple[Union[int,float]] = None, 
+                      drawlonlatlines: bool = False,
+                      extent: Tuple[Union[int, float]] = None,
                       probthr: float = None,
                       ) -> Tuple[GeoAxesSubplot, AxesImage]:
     """Plot a single precipitation event (one timestep).
@@ -202,46 +202,46 @@ def plot_precip_field(da: xr.DataArray,
     ax : Axes, optional
         Axes object to plot the map on, by default None
     ptype : str, optional
-        Type of the map to plot. Options : {'intensity', 
+        Type of the map to plot. Options : {'intensity',
         'depth', 'prob'}, by default "intensity"
     units : str, optional
-        Units of the input array. Options : {'mm/h', 
+        Units of the input array. Options : {'mm/h',
         'mm', 'dBZ'}, by default "mm/h"
     colorscale : str, optional
-        Colorscale to use. Options : {'pysteps', 'STEPS-BE', 
+        Colorscale to use. Options : {'pysteps', 'STEPS-BE',
         'BOM-RF3'}, by default "pysteps"
     colorbar : bool, optional
-        If true, add colorbar on the right side of the plot, 
+        If true, add colorbar on the right side of the plot,
         by default True
     figsize : tuple, optional
         Figure size if ax is not specified, by default (8,5)
     title : str, optional
-        If not None, print the title on top of the plot, 
+        If not None, print the title on top of the plot,
         by default None
 
     drawlonlatlines : bool, optional
         If true, plot longitudes and latitudes, by default False
     extent : Tuple[Union[int,float]], optional
-        bounding box in data coordinates that the image will fill, 
+        bounding box in data coordinates that the image will fill,
         by default None
     probthr : float, optional
-        Intensity threshold to show in the color bar of the 
-        exceedance probability map. Required if ptype is “prob” 
+        Intensity threshold to show in the color bar of the
+        exceedance probability map. Required if ptype is “prob”
         and colorbar is True, by default None
     norm : Normalize, optional
-        Normalize instance used to scale scalar data to the [0, 1] 
+        Normalize instance used to scale scalar data to the [0, 1]
         range before mapping to colors using cmap, by default None
     cmap : Union[Colormap, str], optional
-        Colormap instance or registered colormap name used to map 
+        Colormap instance or registered colormap name used to map
         scalar data to colors, by default None
     Returns
     -------
-    Tuple[GeoAxesSubplot, AxesImage] 
-        The subplot 
+    Tuple[GeoAxesSubplot, AxesImage]
+        The subplot
     """
     if not isinstance(da, xr.DataArray):
         raise TypeError("plot_precip_fields expects a xr.DataArray.")
-        
+
     # Define colorbar appearance
     cbar_label = get_cbar_label(ptype, probthr, units)
     if not cmap and not norm:
@@ -255,68 +255,68 @@ def plot_precip_field(da: xr.DataArray,
     else:
         clevs_str = None
         cbar_kwargs = {}
-    
+
     # Get crs
     crs_ref = ccrs.epsg(21781)
     # crs_ref = proj4_to_cartopy(pyproj.CRS.from_epsg(21781))
     crs_proj = crs_ref
-    
+
     # Create axis if not provided
     if ax is None:
         _, ax = plt.subplots(
                 figsize=figsize,
                 subplot_kw={'projection': crs_proj}
             )
-            
-    # Display the image 
+
+    # Display the image
     p = da.plot.imshow(
         ax=ax,
         transform=crs_ref,
         cmap=cmap,
-        norm=norm, 
+        norm=norm,
         interpolation="nearest",
         add_colorbar=colorbar,
         cbar_kwargs=cbar_kwargs if colorbar else None,
         zorder=1,
     )
-    
-    # Set title 
+
+    # Set title
     if title:
         ax.set_title(title)
-        
-    # Edit colorbar 
+
+    # Edit colorbar
     if colorbar:
         if clevs_str is not None:
             p.colorbar.ax.set_yticklabels(clevs_str)
         p.colorbar.set_label(cbar_label)
-    
-    # Add background 
-    p.axes = _plot_map_cartopy(crs_proj, 
+
+    # Add background
+    p.axes = _plot_map_cartopy(crs_proj,
                                cartopy_scale="50m",
                                drawlonlatlines=drawlonlatlines,
                                ax=p.axes)
-    
-    # Restrict the extent 
+
+    # Restrict the extent
     if extent:
         p.axes.set_extent(extent, crs_ref)
 
     return ax, p
 
 
-def plot_precip_fields(da: xr.DataArray, 
-                       col, 
+def plot_precip_fields(da: xr.DataArray,
+                       col,
                        col_wrap,
-                       ptype="intensity", 
-                       units="mm/h", 
+                       ptype="intensity",
+                       units="mm/h",
                        colorscale="pysteps",
-                       figsize=(12,8), 
-                       title: str = None, 
+                       figsize=(12,8),
+                       title: str = None,
                        colorbar: bool = True,
                        probthr: float = None,
-                       drawlonlatlines: bool = False, 
-                       extent: Tuple[Union[int,float]] = None, 
-                       # norm: Normalize = None, 
-                       # cmap: Union[Colormap, str] = None 
+                       drawlonlatlines: bool = False,
+                       extent: Tuple[Union[int,float]] = None,
+                       # norm: Normalize = None,
+                       # cmap: Union[Colormap, str] = None
                        ):
     """Plot a single precipitation event (one timestep).
     Parameters
@@ -324,44 +324,44 @@ def plot_precip_fields(da: xr.DataArray,
     da : xr.DataArray
         DataArray containing the data to plot, with two
         spatial dimensions (y-x, lat-lon)
-        
+
     ptype : str, optional
-        Type of the map to plot. Options : {'intensity', 
+        Type of the map to plot. Options : {'intensity',
         'depth', 'prob'}, by default "intensity"
     units : str, optional
-        Units of the input array. Options : {'mm/h', 
+        Units of the input array. Options : {'mm/h',
         'mm', 'dBZ'}, by default "mm/h"
     colorscale : str, optional
-        Colorscale to use. Options : {'pysteps', 'STEPS-BE', 
+        Colorscale to use. Options : {'pysteps', 'STEPS-BE',
         'BOM-RF3'}, by default "pysteps"
     colorbar : bool, optional
-        If true, add colorbar on the right side of the plot, 
+        If true, add colorbar on the right side of the plot,
         by default True
     figsize : tuple, optional
         Figure size if ax is not specified, by default (8,5)
     title : str, optional
-        If not None, print the title on top of the plot, 
+        If not None, print the title on top of the plot,
         by default None
 
     drawlonlatlines : bool, optional
         If true, plot longitudes and latitudes, by default False
     extent : Tuple[Union[int,float]], optional
-        bounding box in data coordinates that the image will fill, 
+        bounding box in data coordinates that the image will fill,
         by default None
     probthr : float, optional
-        Intensity threshold to show in the color bar of the 
-        exceedance probability map. Required if ptype is “prob” 
+        Intensity threshold to show in the color bar of the
+        exceedance probability map. Required if ptype is “prob”
         and colorbar is True, by default None
     norm : Normalize, optional
-        Normalize instance used to scale scalar data to the [0, 1] 
+        Normalize instance used to scale scalar data to the [0, 1]
         range before mapping to colors using cmap, by default None
     cmap : Union[Colormap, str], optional
-        Colormap instance or registered colormap name used to map 
+        Colormap instance or registered colormap name used to map
         scalar data to colors, by default None
     Returns
     -------
-    Tuple[GeoAxesSubplot, AxesImage] 
-        The subplot 
+    Tuple[GeoAxesSubplot, AxesImage]
+        The subplot
     """
     if not isinstance(da, xr.DataArray):
         raise TypeError("plot_precip_fields expects a xr.DataArray.")
@@ -375,46 +375,46 @@ def plot_precip_fields(da: xr.DataArray,
         "shrink": 0.8,
         "label": cbar_label
     }
-    
+
     # Get crs
     crs_ref = ccrs.epsg(21781)
     # crs_ref = proj4_to_cartopy(pyproj.CRS.from_epsg(21781))
     crs_proj = crs_ref
 
-    # Plot image 
+    # Plot image
     p = da.plot.imshow(
         subplot_kws={'projection': crs_proj},
         figsize=figsize,
         transform=crs_ref,
         col=col, col_wrap=col_wrap,
         cmap=cmap,
-        norm=norm, 
+        norm=norm,
         interpolation="nearest",
         add_colorbar=colorbar,
         cbar_kwargs=cbar_kwargs,
         zorder=1,
     )
-    
-    # Edit colorbar 
+
+    # Edit colorbar
     # if colorbar:
     #     if clevs_str is not None:
     #         p.colorbar.ax.set_yticklabels(clevs_str)
     #     p.colorbar.set_label(cbar_label)
-        
-    # Set title 
+
+    # Set title
     if title:
         p.fig.suptitle(title, x=0.4, y=1.0, fontsize="x-large")
-    
-    # Add background and set extent 
+
+    # Add background and set extent
     for ax in p.axes.flatten():
-        ax = _plot_map_cartopy(crs_proj, 
+        ax = _plot_map_cartopy(crs_proj,
                                cartopy_scale="50m",
-                               drawlonlatlines = drawlonlatlines,
+                               drawlonlatlines=drawlonlatlines,
                                ax=ax)
-    
+
         if extent:
             ax.set_extent(extent, crs_ref)
 
     return p
 
- 
+

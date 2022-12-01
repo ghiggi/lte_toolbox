@@ -1,7 +1,8 @@
-import zarr
+import re
 import shutil
 import pathlib
 import datetime
+import tempfile
 from typing import Any, Tuple, Union
 
 from time import time
@@ -15,10 +16,11 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 
-from pysteps.io.importers import import_mch_gif
+# from pysteps.io.importers import import_mch_gif
 from pyart.aux_io.metranet_cartesian_reader import read_cartesian_metranet
 from pyart.aux_io import read_gif
-from lte_toolbox.mch.archiving.utils import ensure_regular_timesteps
+from pyart.core import Grid
+from lte_toolbox.mch.archiving.utils_timesteps import ensure_regular_timesteps
 from lte_toolbox.mch.archiving.metadata import METADATA
 from lte_toolbox.mch.archiving.encodings import (
     MCH_NETCDF_ENCODINGS,
@@ -27,8 +29,27 @@ from lte_toolbox.mch.archiving.encodings import (
 )
 from xforecasting.utils.zarr import write_zarr
 
+# -----------------------------------------------------------------------------.
+# Constant variables
+
+
 DEFAULT_FILENAME_FORMAT = "{productid:3s}{time:%y%j%H%M}{radar_availability:2s}.{data_format}"
 CPC_FILENAME_FORMAT = "{productid:3s}{time:%y%j%H%M}{radar_availability:s}_{accutime:s}.{data_format}.gif"
+
+AVAILABLE_VALID_SUFFIXES = {
+    "AZC": [".801"],
+    "BZC": [".845"],
+    "CPC": [".801.gif"],
+    "CPCH": [".801.gif"],
+    "CZC": [".801"],
+    "EZC": [".815", ".820", ".845", ".850"],
+    "LZC": [".801"],
+    "MZC": [".850"],
+    "RZC": [".801"],
+    "aZC": [".824"]
+}
+
+AVAILABLE_VALID_ACCUTIME = [5, 60, 180, 360, 720, 1440, 2880, 4320]
 
 MCH_BOTTOM_LEFT_COORDINATES = [255, -160]
 RADAR_BINARY_LOOKUP = {
@@ -42,10 +63,13 @@ RADAR_BINARY_LOOKUP = {
 ASCII_CODE_POINT_A = ord("a")
 MAX_NUMBER_IN_RADAR_LOOKUP_TABLE = 9
 
+SHORTENED_UNIT = {"millimeter": "mm", "millimeter/hour": "mm/h"}
+
 # -----------------------------------------------------------------------------.
 # Reading mch files
 
-def read_mch_file(input_path: pathlib.Path, product_info: dict, **kwargs):
+
+def read_mch_file(input_path: pathlib.Path, product_info: dict, **kwargs) -> Grid:
     """Read the content of a MCH file using the metranet or the gif reader,
     depending on the product type.
 
@@ -63,10 +87,11 @@ def read_mch_file(input_path: pathlib.Path, product_info: dict, **kwargs):
         Grid object containing the data extracted by the reader
     """
     if product_info.get("productid", "").lower() == "cpc":
-        return import_mch_gif(input_path,
-                              product_info.get("productid"),
-                              "mm",
-                              product_info.get("accutime"))
+        # return import_mch_gif(input_path,
+        #                       product_info.get("productid"),
+        #                       "mm",
+        #                       product_info.get("accutime"))
+        return read_gif(input_path)
     else:
         return read_cartesian_metranet(input_path,
                                        reader=kwargs.get("reader", "python"))
@@ -190,6 +215,31 @@ def get_metranet_header_dictionary(radar_filepath: str) -> dict:
         return None
 
 
+def get_data_header_from_gif(mch_gif: Grid) -> dict:
+    """Given a Grid object returned by Pyart_mch's gif reader, extract
+    the relevant metadata to include in the data header (product, product id,
+    accutime and unit).
+
+    Parameters
+    ----------
+    mch_gif : Grid
+        Grid object returned by Pyart_mch gif reader
+
+    Returns
+    -------
+    dict
+        Dictionary containing the metadata header linked to the data
+    """
+    header = {}
+    header["product"] = mch_gif.metadata["long_name"]
+    header["pid"] = re.findall(r'([a-zA-Z ]*)\d*.*', mch_gif.metadata["PID"])[0]
+    header["accutime"] = mch_gif.metadata["ACCUm"]
+    header["unit"] = SHORTENED_UNIT.get(mch_gif.metadata["units"],
+                                        mch_gif.metadata["units"])
+
+    return header
+
+
 def get_data_header_from_mch(mch, input_path: pathlib.Path,
                              product_info: dict) -> Tuple[np.ma.MaskedArray, dict]:
     """Return the data and the header associated to an MCH file.
@@ -209,17 +259,19 @@ def get_data_header_from_mch(mch, input_path: pathlib.Path,
     Tuple[np.ma.MaskedArrray, dict]
         Data and header associated to an MCH file.
     """
+    field = list(mch.fields.keys())[0]
+    mch_data = mch.fields[field]["data"][0, :, :][::-1, :]
     if product_info.get("productid", "").lower() in ["cpc", "cpch"]:
-        header = mch[2]
+        mch_data = mch_data.copy()
+        mch_data[mch_data == 255] = np.nan
+        mch_data = np.ma.masked_where(mch_data.data != np.nan,
+                                      mch_data.data)
+
+        header = get_data_header_from_gif(mch)
         header["radar"] = get_available_radars(int(product_info["radar_availability"]))
         header["quality"] = get_numerical_radar_quality(product_info["radar_availability"])
-        mch_data = np.ma.masked_where(mch[0] != np.nan,
-                                      mch[0])
     else:
         header = get_metranet_header_dictionary(input_path)
-        field = list(mch.fields.keys())[0]
-        # Drop time dimension and flip data along y axis
-        mch_data = mch.fields[field]["data"][0, :, :][::-1, :]
 
     return mch_data, header
 
@@ -285,6 +337,7 @@ def mch_file_to_xarray(input_path: pathlib.Path, **kwargs):
 def daily_mch_to_netcdf(input_dir_path: pathlib.Path,
                         output_dir_path: pathlib.Path,
                         file_suffix: str,
+                        accutime: int = None,
                         fill_value={"data": np.nan, "mask": 0},
                         **kwargs):
     """Read all the MCH files of a certain day, combine them into one xarray
@@ -302,10 +355,15 @@ def daily_mch_to_netcdf(input_dir_path: pathlib.Path,
         Dictionary containing the fill values for each variable in
         case data is missing, by default {"data": np.nan, "mask": 0}
     """
+    if accutime:
+        accutime = "{:05d}".format(accutime)
+
     output_filename = input_dir_path.name + ".nc"
     list_ds = []
     if not (output_dir_path / output_filename).exists():
-        for file in sorted(input_dir_path.glob(f"*{file_suffix}")):
+        filename_pattern = f"*{accutime}{file_suffix}" if accutime \
+                            else f"*{file_suffix}"
+        for file in sorted(input_dir_path.glob(filename_pattern)):
             try:
                 list_ds.append(mch_file_to_xarray(file, **kwargs))
             except (TypeError, ValueError):
@@ -323,18 +381,19 @@ def daily_mch_to_netcdf(input_dir_path: pathlib.Path,
                                 encoding=encoding)
 
 
-def produce_daily_netcdf(input_path: pathlib.Path,
-                         output_zip_path: pathlib.Path,
-                         output_netcdf_path: pathlib.Path,
-                         file_suffix: str,
-                         fill_value={"data": np.nan, "mask": 0}):
+def pipeline_daily_mch(input_zip_path: pathlib.Path,
+                       output_zip_path: pathlib.Path,
+                       output_netcdf_path: pathlib.Path,
+                       file_suffix: str,
+                       accutime: int = None,
+                       fill_value={"data": np.nan, "mask": 0}):
     """Unzip MCH daily zip file, then read and combine all the
     extracted files into one netCDF file.
 
     Parameters
     ----------
-    input_dir_path : pathlib.Path
-        Path to the input folder
+    input_zip_path : pathlib.Path
+        Path to the input zip file
     output_zip_path : pathlib.Path
         Path to folder where the files will be unzipped
     output_netcdf_path : pathlib.Path
@@ -345,25 +404,26 @@ def produce_daily_netcdf(input_path: pathlib.Path,
         Dictionary containing the fill values for each variable in
         case data is missing, by default {"data": np.nan, "mask": 0}
     """
-    with ZipFile(input_path, 'r') as zip_ref:
-        zip_name = input_path.stem
+    with ZipFile(input_zip_path, 'r') as zip_ref:
+        zip_name = input_zip_path.stem
         output_zip_day_path = output_zip_path / zip_name
         output_zip_day_path.mkdir(exist_ok=True)
         zip_ref.extractall(output_zip_day_path)
         daily_mch_to_netcdf(output_zip_day_path,
                             output_netcdf_path,
                             file_suffix,
-                            fill_value)
+                            accutime=accutime,
+                            fill_value=fill_value)
         shutil.rmtree(output_zip_day_path)
 
 
-def unzip_and_combine_mch(input_dir_path: pathlib.Path,
-                          output_zip_path: pathlib.Path,
-                          output_netcdf_path: pathlib.Path,
+def unzip_and_combine_mch(base_dir: pathlib.Path,
+                          temp_dir_netcdf: pathlib.Path,
                           product: str,
                           file_suffix: str,
                           data_start_date: datetime.datetime,
                           data_end_date: datetime.datetime = None,
+                          accutime: int = None,
                           fill_value={"data": np.nan, "mask": 0},
                           num_workers: int = 2):
     """In parallel, unzip all MCH daily zip files contained in the hierarchy, then
@@ -371,11 +431,9 @@ def unzip_and_combine_mch(input_dir_path: pathlib.Path,
 
     Parameters
     ----------
-    input_dir_path : pathlib.Path
+    base_dir : pathlib.Path
         Path to the input folder
-    output_zip_path : pathlib.Path
-        Path to folder where the files will be unzipped
-    output_netcdf_path : pathlib.Path
+    temp_dir_netcdf : pathlib.Path
         Path to folder where the netCDF files will be saved
     product : str
         Product ID
@@ -385,6 +443,8 @@ def unzip_and_combine_mch(input_dir_path: pathlib.Path,
         Start date of the desired time period to extract
     data_end_date : datetime.datetime, optional
         End date of the desired time period to extract, by default None
+    accutime : int
+        Accumulation time
     fill_value : dict, optional
         Dictionary containing the fill values for each variable in
         case data is missing, by default {"data": np.nan, "mask": 0}
@@ -392,15 +452,30 @@ def unzip_and_combine_mch(input_dir_path: pathlib.Path,
         Number of workers to parallelize the extraction and combination
         process, by default 2
     """
+    if product not in AVAILABLE_VALID_SUFFIXES:
+        raise ValueError("The product you tried to read is not taken into account yet.")
+
+    if file_suffix not in AVAILABLE_VALID_SUFFIXES[product]:
+        raise ValueError("The file suffix you provided is not in the list of valid suffixes for this product.")
+
+    if accutime and accutime not in AVAILABLE_VALID_ACCUTIME:
+        raise ValueError("The accumulation time indicated is not correct.")
+
+    if accutime and product not in ["CPC", "CPCH"]:
+        accutime = None
+        print("Accutime set to None as product is neither CPC nor CPCH.")
+
     if not data_end_date:
         data_end_date = datetime.datetime.today()
-    folders = input_dir_path.glob("*")
+
+    output_zip_path = pathlib.Path(tempfile.mkdtemp())
+    folders = base_dir.glob("*")
     for folder_year in sorted(folders):
         year = int(folder_year.name)
         if year >= data_start_date.year:
             print(f"{year}.. ", end="")
             output_zip_year_path = output_zip_path / str(year)
-            output_netcdf_year_path = output_netcdf_path / str(year)
+            output_netcdf_year_path = temp_dir_netcdf / str(year)
             output_zip_year_path.mkdir(exist_ok=True)
             output_netcdf_year_path.mkdir(exist_ok=True)
 
@@ -412,13 +487,17 @@ def unzip_and_combine_mch(input_dir_path: pathlib.Path,
                     list_folders_days.append(list(folder_day.glob(f"{product}*.zip"))[0])
 
             with Pool(num_workers) as p:
-                p.starmap(produce_daily_netcdf,
+                p.starmap(pipeline_daily_mch,
                           zip(list_folders_days,
                               repeat(output_zip_year_path),
                               repeat(output_netcdf_year_path),
                               repeat(file_suffix),
+                              repeat(accutime),
                               repeat(fill_value)))
             print("done.")
+
+    shutil.rmtree(output_zip_path)
+
 
 # -----------------------------------------------------------------------------.
 # Zarr processing
@@ -426,6 +505,7 @@ def unzip_and_combine_mch(input_dir_path: pathlib.Path,
 
 def netcdf_mch_to_zarr(netcdf_dir_path: pathlib.Path,
                        output_dir_path: pathlib.Path,
+                       chunks: dict = {"time": 576, "x": -1, "y": -1},
                        compressor: Any = "auto"):
     """Load all the daily netCDF files in a hierarchy and combine them into
     one Zarr file, chunked by time.
@@ -437,6 +517,8 @@ def netcdf_mch_to_zarr(netcdf_dir_path: pathlib.Path,
         Structure parent_folder/year/*.nc.
     output_dir_path : pathlib.Path
         Path to folder where the Zarr file will be saved.
+    chunks: dict
+
     compressor : Any, optional
         Compressor to use when saving the Zarr file, by default "auto"
     """
@@ -447,13 +529,12 @@ def netcdf_mch_to_zarr(netcdf_dir_path: pathlib.Path,
     # Load the dataset
     fpaths = [p.as_posix() for p in
               sorted(list(netcdf_dir_path.glob("*/*.nc")))]
-    list_ds = [xr.open_dataset(p, chunks={"time": 576, "x": -1, "y": -1})
+    list_ds = [xr.open_dataset(p, chunks=chunks)
                for p in fpaths]
     ds = xr.concat(list_ds, dim="time")
     pid = list_ds[0].attrs["pid"].upper()
     encoding = MCH_ZARR_ENCODINGS.copy()
     encoding["data"] = DATA_ENCODING_PER_PID[pid]
-    print(encoding)
     # ds.attrs = RZC_METADATA # TODO: MAYBE ADD ALREADY TO NETCDF
     # --------------------------------------------------.
     # Write Zarr by block of time
@@ -535,7 +616,6 @@ def rechunk_zarr_per_pixel(ds: xr.Dataset,
     encoding["data"] = DATA_ENCODING_PER_PID[pid]
 
     for i in range(len(time_intervals)):
-        print(time_intervals[i])
         # Find range of indices of timesteps to cover
         bool_time_range_left = ds.time >= time_intervals[i].to_datetime64()
         if i < len(time_intervals) - 1:
@@ -574,51 +654,3 @@ def rechunk_zarr_per_pixel(ds: xr.Dataset,
 
     ds = xr.open_zarr(spatial_chunk_filepath)
     print("Total Zarr Dataset size when loaded: {:.0f}MB".format(ds.nbytes/10e6))
-
-
-if __name__ == "__main__":
-    file_suffixes = {
-        "AZC": ".801",
-        "BZC": ".845",
-        "CPC": ".801.gif",
-        "CPCH": ".801.gif",
-        "CZC": ".801",
-        "EZC": ".815",
-        "LZC": ".801",
-        "MZC": ".850",
-        "RZC": ".801",
-        "aZC": ".824"
-    }
-    zip_dir_path = pathlib.Path("/ltenas3/alfonso/msrad_bgg/2022")
-    root_dir_path = pathlib.Path("/ltenas3/data/NowProject/snippet_mch/AZC/")
-    if root_dir_path.exists():
-        shutil.rmtree(root_dir_path)
-    unzipped_dir_path = root_dir_path / "unzipped_temp"
-    netcdf_dir_path = root_dir_path / "netcdf_temp"
-    zarr_dir_path = root_dir_path / "zarr"
-
-    unzipped_dir_path.mkdir(exist_ok=True, parents=True)
-    netcdf_dir_path.mkdir(exist_ok=True, parents=True)
-    zarr_dir_path.mkdir(exist_ok=True, parents=True)
-
-    data_start_date = datetime.datetime.strptime("2022-01-01", "%Y-%m-%d")
-    data_end_date = datetime.datetime.strptime("2022-12-31", "%Y-%m-%d")
-    workers = 12
-
-    print("MCH Extraction")
-    unzip_and_combine_mch(zip_dir_path, unzipped_dir_path, netcdf_dir_path,
-                          product="AZC", file_suffix=file_suffixes["AZC"],
-                          data_start_date=data_start_date,
-                          num_workers=workers)
-    print("Converting to temporally-chunked zarr")
-    netcdf_mch_to_zarr(netcdf_dir_path, zarr_dir_path,
-                       compressor=zarr.Blosc(cname="zstd", clevel=3, shuffle=2))
-    print("Temporal to spatial chunking")
-    ds = load_mch_zarr(zarr_dir_path / "chunked_by_time.zarr")
-    rechunk_zarr_per_pixel(ds,
-                           zarr_dir_path,
-                           chunks={"time": -1, "y": 5, "x": 5},
-                           chunk_date_frequency="6MS",
-                           compressor=zarr.Blosc(cname="zstd", clevel=3,
-                                                 shuffle=2),
-                           zarr_filename="chunked_by_pixel_5x5.zarr")
