@@ -1,4 +1,5 @@
 import zarr
+import time
 import shutil
 import pathlib
 import datetime
@@ -9,6 +10,10 @@ from lte_toolbox.mch.archiving.utils_mch import (
     load_mch_zarr,
     rechunk_zarr_per_pixel
 )
+
+# TODO: check suffixes from past
+# TODO: See how to generalise code to other coordinate systems
+# TODO: add function to update zarr when new data is available
 
 file_suffixes = {
     "AZC": ".801",
@@ -37,9 +42,12 @@ accutimes = {
 }
 
 for product in file_suffixes:
+    t_start = time.time()
     print(product)
-    zip_dir_path = pathlib.Path("/ltenas3/alfonso/msrad_bgg/2022")
-    root_dir_path = pathlib.Path(f"/ltenas3/data/NowProject/snippet_mch/{product}")
+    # Point at directory with all the yearly subfolders (2020, 2021, ..)
+    zip_dir_path = pathlib.Path("/ltenas8/mch/msrad/")
+    # Point at directory where you want to save your data
+    root_dir_path = pathlib.Path(f"/ltenas8/data/NowProject/mch_zarr/{product}")
     if accutimes[product] is not None:
         root_dir_path = root_dir_path / str(accutimes[product])
 
@@ -78,4 +86,5 @@ for product in file_suffixes:
                            compressor=zarr.Blosc(cname="zstd", clevel=3,
                                                  shuffle=2),
                            zarr_filename="chunked_by_pixel_5x5.zarr")
+    print("\nTotal time to process {}: {:.0f}min".format(product, (time.time() - t_start)/60))
     print()

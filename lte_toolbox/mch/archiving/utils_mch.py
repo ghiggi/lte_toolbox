@@ -93,8 +93,8 @@ def read_mch_file(input_path: pathlib.Path, product_info: dict, **kwargs) -> Gri
         #                       product_info.get("accutime"))
         return read_gif(input_path)
     else:
-        return read_cartesian_metranet(input_path,
-                                       reader=kwargs.get("reader", "python"))
+        return read_cartesian_metranet(input_path.as_posix(),
+                                       reader=kwargs.get("reader", "C"))
 
 
 def get_filename_format(filename: str) -> str:
@@ -484,7 +484,9 @@ def unzip_and_combine_mch(base_dir: pathlib.Path,
             for folder_day in sorted(days):
                 folder_datetime = datetime.datetime.strptime(folder_day.name, "%y%j")
                 if folder_datetime >= data_start_date and folder_datetime <= data_end_date:
-                    list_folders_days.append(list(folder_day.glob(f"{product}*.zip"))[0])
+                    product_zip_list = list(folder_day.glob(f"{product}*.zip"))
+                    if len(product_zip_list) > 0:
+                        list_folders_days.append(product_zip_list[0])
 
             with Pool(num_workers) as p:
                 p.starmap(pipeline_daily_mch,
